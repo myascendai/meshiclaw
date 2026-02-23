@@ -1,0 +1,11 @@
+{
+  "id": "meshi",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "supabaseUrl": { "type": "string" },
+      "supabaseKey": { "type": "string" }
+    }
+  }
+}
