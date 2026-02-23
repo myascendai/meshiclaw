@@ -1,0 +1,40 @@
+{
+  // MeshiClaw Configuration
+  // Copy to ~/.openclaw/openclaw.json and fill in your values
+  // Run: node scripts/meshi-setup.mjs (writes this + .env and sets model + fallbacks)
+
+  // Agent model: primary + fallbacks. On rate limit, OpenClaw tries fallbacks in order.
+  // Cheap fallbacks reduce "API rate limit reached" errors. Set via meshi-setup or manually:
+  // "agents": {
+  //   "defaults": {
+  //     "model": {
+  //       "primary": "anthropic/claude-sonnet-4-5",
+  //       "fallbacks": ["anthropic/claude-sonnet-4-6", "anthropic/claude-3-5-haiku-20241022"]
+  //     }
+  //   }
+  // },
+
+  // Telegram channel
+  "channels": {
+    "telegram": {
+      "botToken": "${TELEGRAM_BOT_TOKEN}",
+      "dm": {
+        "policy": "open"
+      }
+    }
+  },
+
+  // Meshi plugin
+  "plugins": {
+    "entries": {
+      "meshi": {
+        "enabled": true,
+        "config": {
+          "supabaseUrl": "${MESHI_SUPABASE_URL}",
+          "supabaseKey": "${MESHI_SUPABASE_KEY}",
+          "meshiUserId": "${MESHI_USER_ID}"
+        }
+      }
+    }
+  }
+}

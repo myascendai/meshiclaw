@@ -1,5 +1,6 @@
+import { stripInboundMetadata } from "../../../../src/auto-reply/reply/strip-inbound-meta.js";
 import { stripEnvelope } from "../../../../src/shared/chat-envelope.js";
-import { stripThinkingTags } from "../format.ts";
+import { stripThinkingTags, sanitizeForDisplay } from "../format.ts";
 
 const textCache = new WeakMap<object, string | null>();
 const thinkingCache = new WeakMap<object, string | null>();
@@ -7,9 +8,18 @@ const thinkingCache = new WeakMap<object, string | null>();
 export function extractText(message: unknown): string | null {
   const m = message as Record<string, unknown>;
   const role = typeof m.role === "string" ? m.role : "";
+  const shouldStripInboundMetadata = role.toLowerCase() === "user";
   const content = m.content;
   if (typeof content === "string") {
-    const processed = role === "assistant" ? stripThinkingTags(content) : stripEnvelope(content);
+    let processed =
+      role === "assistant"
+        ? stripThinkingTags(content)
+        : shouldStripInboundMetadata
+          ? stripInboundMetadata(stripEnvelope(content))
+          : stripEnvelope(content);
+    if (role === "assistant") {
+      processed = sanitizeForDisplay(processed);
+    }
     return processed;
   }
   if (Array.isArray(content)) {
@@ -24,12 +34,28 @@ export function extractText(message: unknown): string | null {
       .filter((v): v is string => typeof v === "string");
     if (parts.length > 0) {
       const joined = parts.join("\n");
-      const processed = role === "assistant" ? stripThinkingTags(joined) : stripEnvelope(joined);
+      let processed =
+        role === "assistant"
+          ? stripThinkingTags(joined)
+          : shouldStripInboundMetadata
+            ? stripInboundMetadata(stripEnvelope(joined))
+            : stripEnvelope(joined);
+      if (role === "assistant") {
+        processed = sanitizeForDisplay(processed);
+      }
       return processed;
     }
   }
   if (typeof m.text === "string") {
-    const processed = role === "assistant" ? stripThinkingTags(m.text) : stripEnvelope(m.text);
+    let processed =
+      role === "assistant"
+        ? stripThinkingTags(m.text)
+        : shouldStripInboundMetadata
+          ? stripInboundMetadata(stripEnvelope(m.text))
+          : stripEnvelope(m.text);
+    if (role === "assistant") {
+      processed = sanitizeForDisplay(processed);
+    }
     return processed;
   }
   return null;

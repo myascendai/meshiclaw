@@ -1,0 +1,16 @@
+{
+  "name": "@openclaw/meshi",
+  "version": "2026.2.18",
+  "private": true,
+  "description": "Meshi network intelligence plugin for OpenClaw",
+  "type": "module",
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.33",
+    "@supabase/supabase-js": "^2.49.1"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
