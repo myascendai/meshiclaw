@@ -15,14 +15,27 @@ import {
   type MeshiClient,
 } from "./supabase-client.js";
 import { getStrongestConnections } from "./supabase-client.js";
-import { VectorStore, createEmbeddingProvider, type EmbeddingProvider } from "./zvec/index.js";
+import {
+  VectorStore,
+  MultiVectorStore,
+  createEmbeddingProvider,
+  buildEmbeddingText,
+  analyzeQuery,
+  type EmbeddingProvider,
+  type PersonFields,
+} from "./zvec/index.js";
 
-// Shared Zvec store + embedding provider (lazy-initialized per sync)
+// Shared Zvec stores + embedding provider (lazy-initialized per sync)
 let zvecStore: VectorStore | null = null;
+let multiStore: MultiVectorStore | null = null;
 let embeddingProvider: EmbeddingProvider | null = null;
 
 export function getZvecStore(): VectorStore | null {
   return zvecStore;
+}
+
+export function getMultiStore(): MultiVectorStore | null {
+  return multiStore;
 }
 
 export function initZvecStore(): VectorStore {
@@ -30,6 +43,13 @@ export function initZvecStore(): VectorStore {
     zvecStore = new VectorStore({ name: "meshi-people", dimensions: 1024 });
   }
   return zvecStore;
+}
+
+export function initMultiStore(): MultiVectorStore {
+  if (!multiStore) {
+    multiStore = new MultiVectorStore({ name: "meshi-people-multi", dimensions: 1024 });
+  }
+  return multiStore;
 }
 
 export function getOrCreateEmbeddingProvider(): EmbeddingProvider {
@@ -206,14 +226,24 @@ function createSyncTool(ctx: OpenClawPluginToolContext): AnyAgentTool | null {
       }
 
       const provider = getOrCreateEmbeddingProvider();
+      const multi = initMultiStore();
+      try {
+        await multi.load();
+      } catch {}
+      if (reset) multi.clear();
+
       let indexed = 0;
 
       for (const c of contacts) {
         const id = c.to_person_id;
         if (!id) continue;
-        const text = [c.full_name, c.current_title, c.current_company, c.headline]
-          .filter(Boolean)
-          .join(" — ");
+        const fields: PersonFields = {
+          name: c.full_name,
+          title: c.current_title,
+          company: c.current_company,
+          headline: c.headline,
+        };
+        const text = buildEmbeddingText(fields, "composite");
         try {
           const vec = await provider.embed(text);
           store.upsert(id, vec, {
@@ -224,18 +254,24 @@ function createSyncTool(ctx: OpenClawPluginToolContext): AnyAgentTool | null {
             relationship_type: c.relationship_type,
             mutual_fit_score: c.mutual_fit_score,
           });
+          // Also index into multi-facet store
+          await multi.upsertPerson(id, fields, provider, {
+            relationship_type: c.relationship_type,
+            mutual_fit_score: c.mutual_fit_score,
+          });
           indexed++;
         } catch {
           // skip individual failures
         }
       }
 
-      await store.save();
+      await Promise.all([store.save(), multi.save()]);
       return jsonResult({
         ok: true,
         indexed,
         totalFetched: contacts.length,
         storeSize: store.size,
+        multiFacetSize: multi.size,
       });
     },
   };
@@ -273,13 +309,23 @@ function createSyncFromSearchTool(ctx: OpenClawPluginToolContext): AnyAgentTool 
       }
 
       const provider = getOrCreateEmbeddingProvider();
+      const multi = initMultiStore();
+      try {
+        await multi.load();
+      } catch {}
+      if (reset) multi.clear();
+
       let indexed = 0;
       for (const r of rows) {
         const id = r.to_person_id;
         if (!id) continue;
-        const text = [r.full_name, r.current_title, r.current_company, r.headline]
-          .filter(Boolean)
-          .join(" — ");
+        const fields: PersonFields = {
+          name: r.full_name,
+          title: r.current_title,
+          company: r.current_company,
+          headline: r.headline,
+        };
+        const text = buildEmbeddingText(fields, "composite");
         try {
           const vec = await provider.embed(text);
           store.upsert(id, vec, {
@@ -291,17 +337,23 @@ function createSyncFromSearchTool(ctx: OpenClawPluginToolContext): AnyAgentTool 
             similarity_score: r.similarity_score,
             complementarity_score: r.complementarity_score,
           });
+          await multi.upsertPerson(id, fields, provider, {
+            mutual_fit_score: r.mutual_fit_score,
+            similarity_score: r.similarity_score,
+            complementarity_score: r.complementarity_score,
+          });
           indexed++;
         } catch {}
       }
 
-      await store.save();
+      await Promise.all([store.save(), multi.save()]);
       return jsonResult({
         ok: true,
         query,
         indexed,
         totalFetched: rows.length,
         storeSize: store.size,
+        multiFacetSize: multi.size,
       });
     },
   };
@@ -322,7 +374,32 @@ function createSearchContactsTool(ctx: OpenClawPluginToolContext): AnyAgentTool 
       const query = readStringParam(params, "query", { required: true });
       const limit = readNumberParam(params, "limit", { integer: true }) ?? 10;
 
-      // Try local zvec index first (semantic search)
+      // Try multi-facet store first (best quality)
+      const multi = getMultiStore();
+      if (multi && multi.size > 0) {
+        try {
+          const provider = getOrCreateEmbeddingProvider();
+          const analysis = analyzeQuery(query);
+          const multiResults = await multi.search(query, provider, limit, {
+            method: "weighted_sum",
+            adaptiveWeights: true,
+          });
+          const results = multiResults.map((r) => ({
+            full_name: r.metadata.name as string,
+            current_title: r.metadata.title as string | undefined,
+            current_company: r.metadata.company as string | undefined,
+            headline: r.metadata.headline as string | undefined,
+            to_person_id: r.id,
+            relevance_score: Math.round(r.score * 100) / 100,
+            query_intent: analysis.intent,
+          }));
+          return jsonResult({ results, count: results.length, source: "multi_facet_index" });
+        } catch {
+          // Multi-facet failed — try single vector
+        }
+      }
+
+      // Try single-vector local index (fallback)
       const store = getZvecStore();
       if (store && store.size > 0) {
         try {
@@ -336,10 +413,6 @@ function createSearchContactsTool(ctx: OpenClawPluginToolContext): AnyAgentTool 
             headline: r.metadata.headline as string | undefined,
             to_person_id: r.id,
             relevance_score: Math.round(r.score * 100) / 100,
-            network_strength: r.metadata.network_strength as string | undefined,
-            ...(r.metadata.icebreaker_data != null
-              ? { icebreaker_data: r.metadata.icebreaker_data }
-              : {}),
           }));
           return jsonResult({ results, count: results.length, source: "local_index" });
         } catch {
